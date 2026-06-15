@@ -1,7 +1,15 @@
 /**
- * @file Lua grammar for tree-sitter
+ * @file CfxLua grammar for tree-sitter (fork of tree-sitter-lua)
  * @author Munif Tanjim
  * @license MIT
+ * CFX extensions layered on top of tree-sitter-lua v0.5.0:
+ *   - C-style block comments: /* ... *\/
+ *   - Compound assignments: += -= *= /= etc. (GRIT_POWER_COMPOUND)
+ *   - Backtick hash literals: `model` (GRIT_POWER_COMPILETIME_HASH)
+ *   - Safe navigation: ?. ?[ (GRIT_POWER_SAFENAV)
+ *   - Set constructor shorthand: { .a } { .a = val } (GRIT_POWER_TABINIT)
+ *   - Local unpack: local a, b in t (GRIT_POWER_LOCALIN)
+ *   - defer is _G.defer (GRIT_POWER_DEFER_OLD) — plain identifier, not keyword
  */
 
 /// <reference types="tree-sitter-cli/dsl" />
@@ -33,7 +41,7 @@ const optional_block = ($) => alias(optional($._block), $.block);
 const name_list = ($) => list_seq(field('name', $.identifier), ',');
 
 export default grammar({
-  name: 'lua',
+  name: 'cfxlua',
 
   extras: ($) => [$.comment, /\s/],
 
@@ -45,9 +53,18 @@ export default grammar({
     $._block_string_start,
     $._block_string_content,
     $._block_string_end,
+
+    // CfxLua: C-style /* */ comment tokens (must follow block string tokens in enum order)
+    $._c_block_comment_start,
+    $._c_block_comment_content,
+    $._c_block_comment_end,
   ],
 
   supertypes: ($) => [$.statement, $.expression, $.declaration, $.variable],
+
+  conflicts: ($) => [
+    [$._name_list, $._att_name_list],
+  ],
 
   word: ($) => $.identifier,
 
@@ -84,15 +101,13 @@ export default grammar({
                 for namelist in explist do block end |
                 function funcname funcbody |
                 local function Name funcbody |
-                global function Name funcbody | 
-                local attnamelist ['=' explist] |
-                global attnamelist ['=' explist] |
-                global [attrib] ‘*’
+                local attnamelist ['=' explist]
     */
     statement: ($) =>
       choice(
         $.empty_statement,
         $.assignment_statement,
+        $.augmented_assignment_statement,
         $.function_call,
         $.label_statement,
         $.break_statement,
@@ -123,6 +138,15 @@ export default grammar({
         field('operator', '='),
         alias($._variable_assignment_explist, $.expression_list)
       ),
+    // CfxLua: varlist op= explist  (GRIT_POWER_COMPOUND)
+    augmented_assignment_statement: ($) =>
+      seq(
+        alias($._variable_assignment_varlist, $.variable_list),
+        field('operator', $.augmented_assignment_operator),
+        alias($._variable_assignment_explist, $.expression_list)
+      ),
+    augmented_assignment_operator: (_) =>
+      choice('+=', '-=', '*=', '/=', '^=', '&=', '|=', '<<=', '>>='),
     // varlist ::= var {',' var}
     _variable_assignment_varlist: ($) =>
       list_seq(field('name', $.variable), ','),
@@ -215,10 +239,7 @@ export default grammar({
 
     // function funcname funcbody
     // local function Name funcbody
-    // global function Name funcbody
-    // local attnamelist [‘=’ explist]
-    // global attnamelist [‘=’ explist]
-    // global [attrib] ‘*’
+    // local attnamelist ['=' explist]
     declaration: ($) =>
       choice(
         $.function_declaration,
@@ -227,18 +248,8 @@ export default grammar({
           alias($._local_function_declaration, $.function_declaration)
         ),
         field('local_declaration', $.variable_declaration),
-        field(
-          'global_declaration',
-          alias($._global_function_declaration, $.function_declaration)
-        ),
-        field(
-          'global_declaration',
-          alias($._global_variable_declaration, $.variable_declaration)
-        ),
-        field(
-          'global_declaration',
-          alias($._global_implicit_variable_declaration, $.implicit_variable_declaration)
-        )
+        // CfxLua: local a, b in expr  (GRIT_POWER_INTABLE)
+        field('local_declaration', $.local_unpack_declaration)
       ),
     // function funcname funcbody
     function_declaration: ($) =>
@@ -246,9 +257,6 @@ export default grammar({
     // local function Name funcbody
     _local_function_declaration: ($) =>
       seq('local', 'function', field('name', $.identifier), $._function_body),
-    // global function Name funcbody
-    _global_function_declaration: ($) =>
-      seq('global', 'function', field('name', $.identifier), $._function_body),
     // funcname ::= Name {'.' Name} [':' Name]
     _function_name: ($) =>
       choice(
@@ -276,7 +284,7 @@ export default grammar({
         field('method', $.identifier)
       ),
 
-    // local attnamelist [‘=’ explist]
+    // local attnamelist ['=' explist]
     variable_declaration: ($) =>
       seq(
         'local',
@@ -285,16 +293,7 @@ export default grammar({
           alias($._variable_assignment, $.assignment_statement)
         )
       ),
-    // global attnamelist [‘=’ explist]
-    _global_variable_declaration: ($) =>
-      seq(
-        'global',
-        choice(
-          alias($._att_name_list, $.variable_list),
-          alias($._variable_assignment, $.assignment_statement),
-        )
-      ),
-    // attnamelist ‘=’ explist
+    // attnamelist '=' explist
     _variable_assignment: ($) =>
       seq(
         alias($._att_name_list, $.variable_list),
@@ -302,7 +301,7 @@ export default grammar({
         alias($._variable_assignment_explist, $.expression_list)
       ),
 
-    // attnamelist ::= [attrib] Name [attrib] {‘,’ Name [attrib]}
+    // attnamelist ::= [attrib] Name [attrib] {',' Name [attrib]}
     _att_name_list: ($) =>
       seq(
         optional(field('attribute', alias($._attrib, $.attribute))),
@@ -314,15 +313,17 @@ export default grammar({
           ','
         ),
       ),
-    // global [attrib] ‘*’
-    _global_implicit_variable_declaration: ($) =>
-      seq(
-        'global',
-        optional(field('attribute', alias($._attrib, $.attribute))),
-        '*'
-      ),
-    // attrib ::= ‘<’ Name ‘>’
+    // attrib ::= '<' Name '>'
     _attrib: ($) => seq('<', $.identifier, '>'),
+
+    // CfxLua: local namelist in explist  (GRIT_POWER_LOCALIN)
+    local_unpack_declaration: ($) =>
+      seq(
+        'local',
+        alias($._name_list, $.variable_list),
+        'in',
+        alias($._expression_list, $.expression_list)
+      ),
 
     // explist ::= exp {',' exp}
     _expression_list: ($) => list_seq($.expression, ','),
@@ -338,6 +339,7 @@ export default grammar({
         $.true,
         $.number,
         $.string,
+        $.hash_literal,
         $.vararg_expression,
         $.function_definition,
         $.variable,
@@ -442,6 +444,17 @@ export default grammar({
         field('end', alias($._block_string_end, ']]'))
       ),
 
+    // CfxLua: compile-time Jenkins hash literal `identifier` (GRIT_POWER_COMPILETIME_HASH)
+    hash_literal: ($) =>
+      seq(
+        field('start', '`'),
+        field('content', optional($.hash_content)),
+        field('end', '`')
+      ),
+
+    hash_content: (_) =>
+      token.immediate(repeat1(choice(/[^`\\]+/, /\\./))),
+
     escape_sequence: () =>
       token.immediate(
         seq(
@@ -470,13 +483,13 @@ export default grammar({
       ),
     // '(' [parlist] ')'
     parameters: ($) => seq('(', optional($._parameter_list), ')'),
-    // parlist ::= namelist [‘,’ varargparam] | varargparam
+    // parlist ::= namelist [',' varargparam] | varargparam
     _parameter_list: ($) =>
       choice(
         seq(name_list($), optional(seq(',', $._vararg_parameter))),
         $._vararg_parameter
       ),
-    // varargparam ::= ‘...’ [Name]
+    // varargparam ::= '...' [Name]
     _vararg_parameter: ($) =>
       seq($.vararg_expression, optional(field('name', $.identifier))),
 
@@ -484,9 +497,16 @@ export default grammar({
     _prefix_expression: ($) =>
       prec(1, choice($.variable, $.function_call, $.parenthesized_expression)),
 
-    // var ::=  Name | prefixexp [ exp ] | prefixexp . Name
+    // var ::=  Name | prefixexp [ exp ] | prefixexp . Name | prefixexp ?[ exp ] | prefixexp ?. Name
     variable: ($) =>
-      choice($._contextual_keyword, $.identifier, $.bracket_index_expression, $.dot_index_expression),
+      choice(
+        $.identifier,
+        $.bracket_index_expression,
+        $.dot_index_expression,
+        // CfxLua: safe navigation (GRIT_POWER_SAFENAV)
+        $.safe_bracket_index_expression,
+        $.safe_dot_index_expression,
+      ),
     // prefixexp [ exp ]
     bracket_index_expression: ($) =>
       seq(
@@ -500,6 +520,21 @@ export default grammar({
       seq(
         field('table', $._prefix_expression),
         '.',
+        field('field', $.identifier)
+      ),
+    // CfxLua: prefixexp ?[ exp ]
+    safe_bracket_index_expression: ($) =>
+      seq(
+        field('table', $._prefix_expression),
+        '?[',
+        field('field', $.expression),
+        ']'
+      ),
+    // CfxLua: prefixexp ?. Name
+    safe_dot_index_expression: ($) =>
+      seq(
+        field('table', $._prefix_expression),
+        '?.',
         field('field', $.identifier)
       ),
 
@@ -533,7 +568,7 @@ export default grammar({
     _field_list: ($) => list_seq($.field, $._field_sep, true),
     // fieldsep ::= ',' | ';'
     _field_sep: (_) => choice(',', ';'),
-    // field ::= '[' exp ']' '=' exp | Name '=' exp | exp
+    // field ::= '[' exp ']' '=' exp | Name '=' exp | exp | '.' Name ['=' exp]
     field: ($) =>
       choice(
         seq(
@@ -543,7 +578,13 @@ export default grammar({
           field('operator', '='),
           field('value', $.expression)
         ),
-        seq(field('name', choice($._contextual_keyword, $.identifier)), '=', field('value', $.expression)),
+        seq(field('name', $.identifier), '=', field('value', $.expression)),
+        // CfxLua: { .field } => field = true, { .field = expr } => field = expr (GRIT_POWER_TABINIT)
+        seq(
+          '.',
+          field('name', $.identifier),
+          optional(seq('=', field('value', $.expression)))
+        ),
         field('value', $.expression)
       ),
 
@@ -607,10 +648,12 @@ export default grammar({
 
     // Name
     identifier: (_) => {
+      // CfxLua: exclude `?` (safe navigation) and backtick (joaat hash) so the
+      // lexer does not greedily absorb them into identifiers.
       const identifier_start =
-        /[^\p{Control}\s+\-*/%^#&~|<>=(){}\[\];:,.\\'"\d]/;
+        /[^\p{Control}\s+\-*/%^#&~|<>=(){}\[\];:,.\\'"`?\d]/;
       const identifier_continue =
-        /[^\p{Control}\s+\-*/%^#&~|<>=(){}\[\];:,.\\'"]*/;
+        /[^\p{Control}\s+\-*/%^#&~|<>=(){}\[\];:,.\\'"`?]*/;
       return token(seq(identifier_start, identifier_continue));
     },
 
@@ -625,10 +668,13 @@ export default grammar({
           field('start', alias($._block_comment_start, '[[')),
           field('content', alias($._block_comment_content, $.comment_content)),
           field('end', alias($._block_comment_end, ']]'))
+        ),
+        // CfxLua: C-style /* */ block comment
+        seq(
+          field('start', alias($._c_block_comment_start, '/*')),
+          field('content', alias($._c_block_comment_content, $.comment_content)),
+          field('end', alias($._c_block_comment_end, '*/'))
         )
       ),
-
-    // only `global` for now
-    _contextual_keyword: (_) => 'global',
   },
 });

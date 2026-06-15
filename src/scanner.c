@@ -11,6 +11,11 @@ enum TokenType {
   BLOCK_STRING_START,
   BLOCK_STRING_CONTENT,
   BLOCK_STRING_END,
+
+  // CfxLua: C-style /* */ comments
+  C_BLOCK_COMMENT_START,
+  C_BLOCK_COMMENT_CONTENT,
+  C_BLOCK_COMMENT_END,
 };
 
 static inline void consume(TSLexer *lexer) { lexer->advance(lexer, false); }
@@ -44,36 +49,58 @@ static inline void skip_whitespaces(TSLexer *lexer) {
 typedef struct {
   char ending_char;
   uint8_t level_count;
+  bool in_c_comment;
 } Scanner;
 
 static inline void reset_state(Scanner *scanner) {
   scanner->ending_char = 0;
   scanner->level_count = 0;
+  scanner->in_c_comment = false;
 }
 
-void *tree_sitter_lua_external_scanner_create() {
+void *tree_sitter_cfxlua_external_scanner_create() {
   Scanner *scanner = ts_calloc(1, sizeof(Scanner));
   return scanner;
 }
 
-void tree_sitter_lua_external_scanner_destroy(void *payload) {
+void *tree_sitter_lua_external_scanner_create() {
+  return tree_sitter_cfxlua_external_scanner_create();
+}
+
+void tree_sitter_cfxlua_external_scanner_destroy(void *payload) {
   Scanner *scanner = (Scanner *)payload;
   ts_free(scanner);
 }
 
-unsigned tree_sitter_lua_external_scanner_serialize(void *payload, char *buffer) {
+void tree_sitter_lua_external_scanner_destroy(void *payload) {
+  tree_sitter_cfxlua_external_scanner_destroy(payload);
+}
+
+unsigned tree_sitter_cfxlua_external_scanner_serialize(void *payload, char *buffer) {
   Scanner *scanner = (Scanner *)payload;
   buffer[0] = scanner->ending_char;
   buffer[1] = (char)scanner->level_count;
-  return 2;
+  buffer[2] = scanner->in_c_comment ? 1 : 0;
+  return 3;
 }
 
-void tree_sitter_lua_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
+unsigned tree_sitter_lua_external_scanner_serialize(void *payload, char *buffer) {
+  return tree_sitter_cfxlua_external_scanner_serialize(payload, buffer);
+}
+
+void tree_sitter_cfxlua_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
   Scanner *scanner = (Scanner *)payload;
   if (length == 0) return;
   scanner->ending_char = buffer[0];
   if (length == 1) return;
   scanner->level_count = buffer[1];
+  if (length >= 3) {
+    scanner->in_c_comment = buffer[2] != 0;
+  }
+}
+
+void tree_sitter_lua_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
+  tree_sitter_cfxlua_external_scanner_deserialize(payload, buffer, length);
 }
 
 static bool scan_block_start(Scanner *scanner, TSLexer *lexer) {
@@ -117,6 +144,40 @@ static bool scan_block_content(Scanner *scanner, TSLexer *lexer) {
   return false;
 }
 
+// CfxLua: /* ... */ comment scanning
+
+static bool scan_c_comment_start(Scanner *scanner, TSLexer *lexer) {
+  if (consume_char('/', lexer) && consume_char('*', lexer)) {
+    scanner->in_c_comment = true;
+    lexer->mark_end(lexer);
+    lexer->result_symbol = C_BLOCK_COMMENT_START;
+    return true;
+  }
+  return false;
+}
+
+// Emits content up to (but not including) the closing "*/".
+// The END rule consumes "*/" on the subsequent scanner invocation.
+static bool scan_c_comment_content(Scanner *scanner, TSLexer *lexer) {
+  if (!scanner->in_c_comment) return false;
+
+  while (lexer->lookahead != 0) {
+    if (lexer->lookahead == '*') {
+      lexer->mark_end(lexer);
+      consume(lexer);
+      if (lexer->lookahead == '/') {
+        lexer->result_symbol = C_BLOCK_COMMENT_CONTENT;
+        return true;
+      }
+      continue;
+    }
+    consume(lexer);
+  }
+
+  lexer->result_symbol = C_BLOCK_COMMENT_CONTENT;
+  return true;
+}
+
 static bool scan_comment_start(Scanner *scanner, TSLexer *lexer) {
   if (consume_char('-', lexer) && consume_char('-', lexer)) {
     lexer->mark_end(lexer);
@@ -154,7 +215,7 @@ static bool scan_comment_content(Scanner *scanner, TSLexer *lexer) {
   return false;
 }
 
-bool tree_sitter_lua_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
+bool tree_sitter_cfxlua_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
   Scanner *scanner = (Scanner *)payload;
 
   if (valid_symbols[BLOCK_STRING_END] && scan_block_end(scanner, lexer)) {
@@ -174,11 +235,29 @@ bool tree_sitter_lua_external_scanner_scan(void *payload, TSLexer *lexer, const 
     return true;
   }
 
+  if (valid_symbols[C_BLOCK_COMMENT_END] && scanner->in_c_comment) {
+    if (consume_char('*', lexer) && consume_char('/', lexer)) {
+      scanner->in_c_comment = false;
+      lexer->result_symbol = C_BLOCK_COMMENT_END;
+      return true;
+    }
+  }
+
+  if (valid_symbols[C_BLOCK_COMMENT_CONTENT] && scan_c_comment_content(scanner, lexer)) {
+    return true;
+  }
+
   if (valid_symbols[BLOCK_COMMENT_CONTENT] && scan_comment_content(scanner, lexer)) {
     return true;
   }
 
   skip_whitespaces(lexer);
+
+  if (valid_symbols[C_BLOCK_COMMENT_START]) {
+    if (scan_c_comment_start(scanner, lexer)) {
+      return true;
+    }
+  }
 
   if (valid_symbols[BLOCK_STRING_START] && scan_block_start(scanner, lexer)) {
     lexer->result_symbol = BLOCK_STRING_START;
@@ -192,4 +271,8 @@ bool tree_sitter_lua_external_scanner_scan(void *payload, TSLexer *lexer, const 
   }
 
   return false;
+}
+
+bool tree_sitter_lua_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
+  return tree_sitter_cfxlua_external_scanner_scan(payload, lexer, valid_symbols);
 }

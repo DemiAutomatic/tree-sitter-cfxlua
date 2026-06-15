@@ -2,8 +2,8 @@
   "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
   "grammars": [
     {
-      "name": "lua",
-      "scope": "source.lua",
+      "name": "cfxlua",
+      "scope": "source.cfxlua",
       "path": ".",
       "file-types": [
         "lua"
@@ -12,7 +12,7 @@
       "injections": "queries/injections.scm",
       "locals": "queries/locals.scm",
       "tags": "queries/tags.scm",
-      "injection-regex": "^lua$"
+      "injection-regex": "^(cfxlua|lua)$"
     }
   ],
   "metadata": {
