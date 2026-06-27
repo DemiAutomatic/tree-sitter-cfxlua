@@ -1,0 +1,182 @@
+================================================================================
+augmented assignment (compound operators)
+================================================================================
+
+x += 1
+y -= foo?.bar
+
+--------------------------------------------------------------------------------
+
+(chunk
+  (augmented_assignment_statement
+    (variable_list
+      (identifier))
+    (augmented_assignment_operator)
+    (expression_list
+      (number)))
+  (augmented_assignment_statement
+    (variable_list
+      (identifier))
+    (augmented_assignment_operator)
+    (expression_list
+      (safe_dot_index_expression
+        (identifier)
+        (identifier)))))
+
+================================================================================
+hash literal (joaat backticks)
+================================================================================
+
+local model = `adder`
+
+--------------------------------------------------------------------------------
+
+(chunk
+  (local_declaration
+    (variable_declaration
+      (variable_list
+        (identifier))
+      (assignment_statement
+        (variable_list
+          (identifier))
+        "="
+        (expression_list
+          (hash_literal
+            "`"
+            (hash_content)
+            "`"))))))
+
+================================================================================
+set constructor shorthand (tabinit)
+================================================================================
+
+local t = { .name, .age = 30 }
+
+--------------------------------------------------------------------------------
+
+(chunk
+  (local_declaration
+    (variable_declaration
+      (variable_list
+        (identifier))
+      (assignment_statement
+        (variable_list
+          (identifier))
+        "="
+        (expression_list
+          (table_constructor
+            "{"
+            (field
+              "."
+              (identifier))
+            ","
+            (field
+              "."
+              (identifier)
+              "="
+              (number))
+            "}"))))))
+
+================================================================================
+local unpack (local ... in ...)
+================================================================================
+
+local x, y in mytable
+
+--------------------------------------------------------------------------------
+
+(chunk
+  (local_declaration
+    (local_unpack_declaration
+      "local"
+      (variable_list
+        (identifier)
+        ","
+        (identifier))
+      "in"
+      (expression_list
+        (identifier)))))
+
+================================================================================
+safe navigation (?. and ?[)
+================================================================================
+
+local v = foo?[key]
+local w = player?.coords
+
+--------------------------------------------------------------------------------
+
+(chunk
+  (local_declaration
+    (variable_declaration
+      (variable_list
+        (identifier))
+      (assignment_statement
+        (variable_list
+          (identifier))
+        "="
+        (expression_list
+          (safe_bracket_index_expression
+            (identifier)
+            "?["
+            (identifier)
+            "]")))))
+  (local_declaration
+    (variable_declaration
+      (variable_list
+        (identifier))
+      (assignment_statement
+        (variable_list
+          (identifier))
+        "="
+        (expression_list
+          (safe_dot_index_expression
+            (identifier)
+            (identifier))))))
+
+================================================================================
+C-style block comments
+================================================================================
+
+/* c style comment */
+local x = 1
+
+--------------------------------------------------------------------------------
+
+(chunk
+  (comment
+    "/*"
+    (comment_content)
+    "*/")
+  (local_declaration
+    (variable_declaration
+      (variable_list
+        (identifier))
+      (assignment_statement
+        (variable_list
+          (identifier))
+        "="
+        (expression_list
+          (number))))))
+
+================================================================================
+defer as function call (not keyword)
+================================================================================
+
+defer(myfunc)
+
+defer(function() end)
+
+--------------------------------------------------------------------------------
+
+(chunk
+  (function_call
+    (identifier)
+    (arguments
+      (identifier)))
+  (function_call
+    (identifier)
+    (arguments
+      (function_definition
+        (parameters)
+        (block))))))
